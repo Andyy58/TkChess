@@ -1,15 +1,22 @@
-from ast import Delete
-from lzma import is_check_supported
-from operator import length_hint
+from concurrent import futures
 from PIL import ImageTk, Image
 import tkinter as tk
 import chess
 from itertools import cycle
+from stockfish import Stockfish
+
+thread_pool_executor = futures.ThreadPoolExecutor(max_workers=1)
+
+stockfish = Stockfish(path="./stockfish-engine",
+                      parameters={"UCI_LimitStrength": "true"})
+stockfish.set_elo_rating(100)
+stockfish.set_skill_level(1)
+print(stockfish.get_parameters())
 
 alpha = {0: 'a', 1: 'b', 2: 'c', 3: 'd', 4: 'e', 5: 'f', 6: 'g', 7: 'h'}
 revAlpha = {'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7}
 
-ai = False
+computer = True
 
 
 def mapFen(fen):
@@ -35,6 +42,7 @@ class ChessBoard(tk.Tk):
                  tileCount=8,
                  startingFEN="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"):
         super().__init__()
+        self.state = 'wait'
         self.tileCount = tileCount
         self.leftframe = tk.Frame(self)
         self.leftframe.grid(row=0, column=0, rowspan=10, padx=20)
@@ -53,7 +61,14 @@ class ChessBoard(tk.Tk):
                             relief=tk.SUNKEN,
                             width=40,
                             height=40)
-        self.pieceMap = mapFen(startingFEN)
+        self.restartButton = tk.Button(self.leftframe,
+                                       text="Restart",
+                                       command=self.restartGame)
+        self.computerPlayButton = tk.Button(self.leftframe,
+                                            text="Computer play",
+                                            command=self.computerPlay)
+        self.defaultFEN = startingFEN
+        self.pieceMap = mapFen(self.defaultFEN)
         self.selected = None
         self.validMoves = {}
         self.pieceData = {
@@ -71,7 +86,9 @@ class ChessBoard(tk.Tk):
             'R': tk.PhotoImage(file='./chesspieces/wr.png')
         }
         self.TRects = []
+        self.computerPlayButton.pack()
         self.drawLogs("")
+        self.restartButton.pack()
 
     def create_rectangle(self, x1, y1, x2, y2, tags="", **kwargs):
         if 'alpha' in kwargs:
@@ -87,17 +104,27 @@ class ChessBoard(tk.Tk):
                                      anchor='nw')
         self.canvas.create_rectangle(x1, y1, x2, y2, **kwargs)
 
+    def drawLogs(self, text):
+        self.logs.config(state="normal")
+        self.logs.insert(tk.END, text)
+        self.logs.config(state="disabled")
+        self.logs.pack()
+
     def squareToCoord(self, square):
         return (int(revAlpha[square[0]]), int(square[1]) - 1)
 
     def coordToSquare(self, coord):
         return f"{alpha[coord[0]]}{coord[1] + 1}"
 
-    def drawLogs(self, text):
+    def restartGame(self):
+        self.pyBoard.reset()
+        self.pieceMap = mapFen(self.defaultFEN)
+        self.selected = None
+        self.validMoves = {}
         self.logs.config(state="normal")
-        self.logs.insert(tk.END, text)
+        self.logs.delete(0.0, tk.END)
         self.logs.config(state="disabled")
-        self.logs.pack()
+        self.drawboard()
 
     def update(self, fen):
         self.pieceMap = mapFen(fen)
@@ -144,58 +171,68 @@ class ChessBoard(tk.Tk):
                     "<Button-1>",
                     lambda e, i=col, j=row: self.select(e, i, j))
 
+    def computerPlay(self):
+        if computer and not self.pyBoard.turn:
+            stockfish.set_fen_position(self.pyBoard.fen())
+            computerMove = stockfish.get_best_move()
+            self.pushMove(chess.Move.from_uci(computerMove))
+            self.drawboard()
+
+    def pushMove(self, move):
+        moveSan = self.pyBoard.san(move)
+        if self.pyBoard.turn:
+            self.drawLogs(
+                f"{self.pyBoard.fullmove_number}  {self.pyBoard.san(move)} {' ' * (10 - len(moveSan))}"
+            )
+        else:
+            self.drawLogs(f"{moveSan} \n")
+        # Push move to engine
+        self.pyBoard.push(move)
+        # Clear stored move variables
+        self.selected = None
+        self.validMoves = {}
+        # Update board visual data
+        self.update(self.pyBoard.fen())
+        # Checkmate message
+        if self.pyBoard.is_checkmate():
+            self.drawLogs(
+                f"\nGAME OVER: Checkmate by {'Black' if self.pyBoard.turn else 'White'}."
+            )
+        elif self.pyBoard.is_stalemate():
+            self.drawLogs("\nGAME OVER: Stalemate")
+
     # Handle player move input
     def select(self, event, i, j):  # sourcery skip: extract-method
+        # Assign turn variable for easier access
+        turn = self.pyBoard.turn
+        if not computer or turn:
+            if (i, j) in self.validMoves.values():
+                # Generate uci notation of move
+                curMove = self.coordToSquare(
+                    self.selected) + self.coordToSquare((i, j))
 
-        # If selected tile is not a piece, checks if it is a valid move
-        if (i, j) in self.validMoves.values():
-            # Generate uci notation of move
-            curMove = self.coordToSquare(self.selected) + self.coordToSquare(
-                (i, j))
-
-            # Check for possible promotions, if possible, promote to queen
-            if (chess.Move.from_uci(f"{curMove}q")) in self.validMoves:
-                curMove = chess.Move.from_uci(f"{curMove}q")
+                # Check for possible promotions, if possible, promote to queen
+                curMove = (chess.Move.from_uci(f"{curMove}q") if
+                           (chess.Move.from_uci(f"{curMove}q"))
+                           in self.validMoves else
+                           chess.Move.from_uci(curMove))
+                # Logs moves in window
+                self.pushMove(curMove)
             else:
-                curMove = chess.Move.from_uci(curMove)
+                self.selected = (i, j)
+                selected = self.coordToSquare(self.selected)
+                self.validMoves = {
+                    a: self.squareToCoord(str(a)[2:4])
+                    for a in list(
+                        self.pyBoard.generate_legal_moves(from_mask=(
+                            chess.BB_SQUARES[chess.parse_square(selected)])))
+                }
 
-            # Assign turn variable for easier access
-            #turn = f"{'White' if self.pyBoard.turn else 'Black'}"
-            turn = self.pyBoard.turn
-
-            # Display moves in log window
-            if turn:
-                self.drawLogs(f"  {self.pyBoard.san(curMove)}")
-            else:
-                moveSan = self.pyBoard.san(curMove)
-                self.drawLogs(f"{' ' * (10 - len(moveSan))}{moveSan}")
-
-            # Push move to engine
-            self.pyBoard.push(curMove)
-            # Clear stored move variables
-            self.selected = None
-            self.validMoves = {}
-            # Update board visual data
-            self.update(self.pyBoard.fen())
-            # Checkmate message
-            if self.pyBoard.is_checkmate():
-                self.drawLogs(
-                    f"\nGAME OVER: Checkmate by {'Black' if turn else 'White'}."
-                )
-            elif self.pyBoard.is_stalemate():
-                self.drawLogs("\nGAME OVER: Stalemate")
-        # If selected tile is a piece, generates its valid moves
-        else:
-            self.selected = (i, j)
-            selected = self.coordToSquare(self.selected)
-            self.validMoves = {
-                a: self.squareToCoord(str(a)[2:4])
-                for a in list(
-                    self.pyBoard.generate_legal_moves(from_mask=(
-                        chess.BB_SQUARES[chess.parse_square(selected)])))
-            }
         # Draw new board
         self.drawboard()
+        #self.drawboard()
+        #self.computerPlay()
+        print('draw')
 
 
 board = ChessBoard()
