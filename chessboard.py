@@ -1,4 +1,5 @@
 from concurrent import futures
+from typing import assert_type
 from PIL import ImageTk, Image
 import tkinter as tk
 import chess
@@ -11,7 +12,6 @@ stockfish = Stockfish(path="./stockfish-engine",
                       parameters={"UCI_LimitStrength": "true"})
 stockfish.set_elo_rating(100)
 stockfish.set_skill_level(1)
-print(stockfish.get_parameters())
 
 alpha = {0: 'a', 1: 'b', 2: 'c', 3: 'd', 4: 'e', 5: 'f', 6: 'g', 7: 'h'}
 revAlpha = {'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7}
@@ -236,5 +236,15 @@ class ChessBoard(tk.Tk):
 
 
 board = ChessBoard()
+# Tests
+assert (board.coordToSquare((0, 0)) == 'a1')
+assert (board.coordToSquare((7, 7)) == 'h8')
+assert (board.squareToCoord('a1') == (0, 0))
+assert (board.squareToCoord('h8') == (7, 7))
+assert_type(board.pieceMap, list)
+assert_type(board.pieceMap[0], list)
+assert_type(board.pieceMap[0][0], str)
+assert (board.pieceMap[7][2] == 'B')
+
 board.drawboard()
 board.mainloop()
